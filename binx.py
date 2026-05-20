@@ -57,18 +57,36 @@ def fetch_bin(bin_number: str, proxy: str = None) -> dict:
 
     # Reviews
     reviews = []
-    try:
-        rr = SESSION.get(f"{API}/bins/{bin_number}/reviews", **kwargs)
-        if rr.status_code == 200:
-            for rev in rr.json().get("reviews", []):
+    offset = 0
+    limit = 50
+    while True:
+        try:
+            url = f"{API}/bins/{bin_number}/reviews?offset={offset}&limit={limit}"
+            rr = SESSION.get(url, **kwargs)
+            if rr.status_code != 200:
+                break
+            
+            data = rr.json()
+            page_reviews = data.get("reviews", [])
+            if not page_reviews:
+                break
+            
+            for rev in page_reviews:
                 reviews.append({
                     "user":   rev.get("user", {}).get("display_name") or "Anonymous",
                     "rating": f"{rev.get('rating', 0)}/5",
                     "text":   rev.get("description") or "",
                     "time":   rev.get("created_at", ""),
                 })
-    except Exception:
-        pass
+            
+            offset += len(page_reviews)
+            total = data.get("total", 0)
+            if len(reviews) >= total or offset >= total:
+                break
+            
+            time.sleep(0.1)  # Respectful delay between page fetches
+        except Exception:
+            break
 
     return {"bin": bin_number, "info": info_data, "reviews": reviews}
 

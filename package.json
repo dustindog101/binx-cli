@@ -1,0 +1,17 @@
+{
+  "name": "fractal-plasma",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cli-table3": "^0.6.5",
+    "playwright": "^1.59.1"
+  }
+}
