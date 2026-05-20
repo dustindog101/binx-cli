@@ -405,6 +405,8 @@ def main():
                     time.sleep(args.delay)
 
     # ── 4. Merge Successful Online Lookups into Cache ─────────────────────────
+    total_reviews_added = 0
+    total_bins_updated = 0
     if not args.offline:
         for r in results:
             if r is not None and not r.get("error") and not r.get("offline") and not r.get("fallback"):
@@ -422,12 +424,14 @@ def main():
                 new_reviews = r.get("reviews", [])
                 merged_reviews = list(cached_reviews)
                 added_any = False
+                reviews_added_for_this_bin = 0
                 for rev in new_reviews:
                     fp = (rev.get("user", ""), rev.get("rating", ""), rev.get("text", ""), rev.get("time", ""))
                     if fp not in seen_fps:
                         merged_reviews.append(rev)
                         seen_fps.add(fp)
                         added_any = True
+                        reviews_added_for_this_bin += 1
                 
                 # Sort reviews by date descending (newest first)
                 merged_reviews.sort(key=lambda x: x.get("time", ""), reverse=True)
@@ -446,6 +450,8 @@ def main():
                     added_any):
                     cache[b] = updated_entry
                     cache_modified = True
+                    total_bins_updated += 1
+                    total_reviews_added += reviews_added_for_this_bin
 
     # ── 5. Print Output Results ───────────────────────────────────────────────
     for r in results:
@@ -464,7 +470,17 @@ def main():
     if cache_modified:
         save_cache(cache)
 
-    print(f"{green('✅')} Done — {len(results)} BIN(s) checked.\n")
+    bins_checked = len(results)
+    bins_from_cache = sum(1 for r in results if r is not None and (r.get("offline") or r.get("fallback")))
+    
+    stats = [
+        f"{bold(bins_checked)} BIN(s) checked",
+        f"{yellow(bins_from_cache)} cached",
+        f"{green(total_bins_updated)} modified",
+        f"{cyan(total_reviews_added)} reviews added"
+    ]
+        
+    print(f"{green('✅')} Done — {', '.join(stats)}.\n")
 
 if __name__ == "__main__":
     main()
