@@ -142,9 +142,47 @@ def print_bin(result: dict):
         print(f"  {dim('·' * 30)}")
     print()
 
+# ── Help ──────────────────────────────────────────────────────────────────────
+def print_help():
+    print(f"\n{bold(cyan('╔══════════════════════════════════════════════════════════════════════╗'))}")
+    print(f"{bold(cyan('║'))}  {bold(green('🔍 binx-cli'))} — Modern Crowdsourced BIN Lookup & Reviews         {bold(cyan('║'))}")
+    print(f"{bold(cyan('╚══════════════════════════════════════════════════════════════════════╝'))}")
+    
+    print(f"\n{bold(yellow('USAGE:'))}")
+    print(f"  python3 binx.py {cyan('<bin1> [bin2] ...')} [options]")
+    print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
+    print(f"  python3 binx.py {cyan('help')}")
+
+    print(f"\n{bold(yellow('COMMANDS:'))}")
+    print(f"  {green('help')}                        Show this beautiful, customized help screen.")
+
+    print(f"\n{bold(yellow('OPTIONS:'))}")
+    print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
+    print(f"  {green('-j, --json')} {cyan('FILE')}             Export results as a structured JSON file.")
+    print(f"  {green('-c, --concurrency')} {cyan('NUM')}       Number of concurrent lookup threads (default: {bold('5')}).")
+    print(f"                           Set to {bold('1')} for sequential processing.")
+    print(f"  {green('--proxy')} {cyan('URL')}                  Proxy URL to route through (e.g. http://1.2.3.4:8080).")
+    print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
+    print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
+    print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
+
+    print(f"\n{bold(yellow('EXAMPLES:'))}")
+    print(f"  {dim('# Lookup a single BIN')}")
+    print(f"  python3 binx.py {cyan('400022')}")
+    print(f"  ")
+    print(f"  {dim('# Lookup multiple BINs concurrently with custom workers')}")
+    print(f"  python3 binx.py {cyan('400022 486796 432359')} -c 10")
+    print(f"  ")
+    print(f"  {dim('# Bulk process from a file and save results to JSON')}")
+    print(f"  python3 binx.py {cyan('-f bins.txt')} -j output.json")
+    print(f"  ")
+    print(f"  {dim('# Route requests through a proxy with no color')}")
+    print(f"  python3 binx.py {cyan('400022')} --proxy http://127.0.0.1:8888 --no-color")
+    print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
+
 # ── Args ──────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(prog="binx", description="BIN lookup & reviews from binx.vip")
+    p = argparse.ArgumentParser(prog="binx", description="BIN lookup & reviews from binx.vip", add_help=False)
     p.add_argument("bins", nargs="*", help="BIN number(s)")
     p.add_argument("--file", "-f", metavar="FILE", help="File with one BIN per line")
     p.add_argument("--json", "-j", metavar="FILE", help="Save results to JSON file")
@@ -152,6 +190,7 @@ def parse_args():
     p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between sequential requests (default: 0.3s)")
     p.add_argument("--concurrency", "-c", type=int, default=5, metavar="NUM", help="Number of concurrent lookups (default: 5, set to 1 for sequential)")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
+    p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
     return p.parse_args()
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -160,7 +199,15 @@ def main():
     args = parse_args()
     if args.no_color: USE_COLOR = False
 
+    if args.help:
+        print_help()
+        sys.exit(0)
+
     bins = list(args.bins)
+    if "help" in bins:
+        print_help()
+        sys.exit(0)
+
     if args.file:
         path = Path(args.file)
         if not path.exists(): sys.exit(f"File not found: {args.file}")
@@ -170,7 +217,7 @@ def main():
     bins = [b for b in bins if not (b in seen or seen.add(b))]
 
     if not bins:
-        print(__doc__)
+        print_help()
         sys.exit(0)
 
     print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)\n")
