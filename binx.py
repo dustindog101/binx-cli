@@ -59,36 +59,38 @@ def fetch_bin(bin_number: str, session=None, proxy: str = None) -> dict:
 
     # Reviews
     reviews = []
-    offset = 0
-    limit = 50
-    while True:
-        try:
-            url = f"{API}/bins/{bin_number}/reviews?offset={offset}&limit={limit}"
-            rr = session.get(url, **kwargs)
-            if rr.status_code != 200:
+    review_count = int(info_data.get("review_count") or 0)
+    if review_count > 0:
+        offset = 0
+        limit = 50
+        while True:
+            try:
+                url = f"{API}/bins/{bin_number}/reviews?offset={offset}&limit={limit}"
+                rr = session.get(url, **kwargs)
+                if rr.status_code != 200:
+                    break
+                
+                data = rr.json()
+                page_reviews = data.get("reviews", [])
+                if not page_reviews:
+                    break
+                
+                for rev in page_reviews:
+                    reviews.append({
+                        "user":   rev.get("user", {}).get("display_name") or "Anonymous",
+                        "rating": f"{rev.get('rating', 0)}/5",
+                        "text":   rev.get("description") or "",
+                        "time":   rev.get("created_at", ""),
+                    })
+                
+                offset += len(page_reviews)
+                total = data.get("total", 0)
+                if len(reviews) >= total or offset >= total:
+                    break
+                
+                time.sleep(0.1)  # Respectful delay between page fetches
+            except Exception:
                 break
-            
-            data = rr.json()
-            page_reviews = data.get("reviews", [])
-            if not page_reviews:
-                break
-            
-            for rev in page_reviews:
-                reviews.append({
-                    "user":   rev.get("user", {}).get("display_name") or "Anonymous",
-                    "rating": f"{rev.get('rating', 0)}/5",
-                    "text":   rev.get("description") or "",
-                    "time":   rev.get("created_at", ""),
-                })
-            
-            offset += len(page_reviews)
-            total = data.get("total", 0)
-            if len(reviews) >= total or offset >= total:
-                break
-            
-            time.sleep(0.1)  # Respectful delay between page fetches
-        except Exception:
-            break
 
     return {"bin": bin_number, "info": info_data, "reviews": reviews}
 
@@ -177,14 +179,21 @@ def main():
 
     if args.concurrency > 1 and len(bins) > 1:
         import concurrent.futures
+        import threading
+        
+        thread_local = threading.local()
         max_workers = min(args.concurrency, len(bins))
         
+        def get_thread_session():
+            if not hasattr(thread_local, "session"):
+                thread_local.session = cffi_requests.Session(
+                    impersonate="chrome124",
+                    curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
+                )
+            return thread_local.session
+        
         def worker(idx, b):
-            local_session = cffi_requests.Session(
-                impersonate="chrome124",
-                curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
-            )
-            return idx, fetch_bin(b, session=local_session, proxy=args.proxy)
+            return idx, fetch_bin(b, session=get_thread_session(), proxy=args.proxy)
             
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(worker, idx, b): b for idx, b in enumerate(bins)}
