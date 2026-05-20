@@ -10,7 +10,7 @@ Usage:
   python3 binx.py 403306 --json out.json
 """
 
-import sys, json, time, argparse
+import sys, json, time, argparse, os, tempfile
 from pathlib import Path
 
 try:
@@ -40,6 +40,29 @@ HEADERS = {
     "Origin": "https://binx.vip",
     "Referer": "https://binx.vip/",
 }
+
+# ── Cache Database Setup ──────────────────────────────────────────────────────
+CACHE_FILE = Path("binx_cache.json")
+
+def load_cache() -> dict:
+    if not CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(dim(f"⚠️ Cache read/decode error: {e}. Reinitializing clean cache."))
+        return {}
+
+def save_cache(cache: dict):
+    try:
+        # Atomic, corruption-proof save
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=".", encoding="utf-8") as tf:
+            json.dump(cache, tf, indent=2, ensure_ascii=False)
+            temp_path = tf.name
+        os.replace(temp_path, CACHE_FILE)
+    except Exception as e:
+        print(red(f"✗ Failed to save cache: {e}"))
+
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 def fetch_bin(bin_number: str, session=None, proxy: str = None) -> dict:
@@ -108,7 +131,14 @@ def print_bin(result: dict):
     bank = info.get("bank", "")
     avg  = info.get("avg_rating", "")
     cnt  = info.get("review_count", 0)
-    print(f"  {bold('BIN')} {bold(result['bin'])}  ·  {dim(bank)}")
+    
+    stamp = ""
+    if result.get("offline"):
+        stamp = f"  {yellow('[OFFLINE CACHE]')}"
+    elif result.get("fallback"):
+        stamp = f"  {yellow('[OFFLINE FALLBACK]')}"
+        
+    print(f"  {bold('BIN')} {bold(result['bin'])}  ·  {dim(bank)}{stamp}")
     print(cyan("═" * 62))
 
     if result.get("error"):
@@ -164,6 +194,8 @@ def print_help():
     print(f"                           Set to 1 for sequential processing.")
     print(f"  {green('--proxy')} {cyan('URL')}                  Proxy URL to route through (e.g. http://1.2.3.4:8080).")
     print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
+    print(f"  {green('--offline')} / {green('--cache-only')}       Search and display exclusively from the local cache.")
+    print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
     print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
 
@@ -176,6 +208,9 @@ def print_help():
     print(f"  ")
     print(f"  {dim('# Bulk process from a file and save results to JSON')}")
     print(f"  python3 binx.py {cyan('-f bins.txt')} -j output.json")
+    print(f"  ")
+    print(f"  {dim('# Query in fully offline mode from local reviews database')}")
+    print(f"  python3 binx.py {cyan('486796')} --offline")
     print(f"  ")
     print(f"  {dim('# Route requests through a proxy with no color')}")
     print(f"  python3 binx.py {cyan('400022')} --proxy http://127.0.0.1:8888 --no-color")
@@ -190,6 +225,8 @@ def parse_args():
     p.add_argument("--proxy", metavar="URL", help="Proxy URL to bypass blocks (e.g. http://1.2.3.4:8080)")
     p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between sequential requests (default: 0.3s)")
     p.add_argument("--concurrency", "-c", type=int, default=None, metavar="NUM", help="Number of concurrent lookups (default: auto, set to 1 for sequential)")
+    p.add_argument("--offline", "--cache-only", action="store_true", help="Search and display exclusively from the local cache")
+    p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
     return p.parse_args()
@@ -203,6 +240,22 @@ def main():
     if args.help:
         print_help()
         sys.exit(0)
+
+    # ── 1. Clear Cache check ──────────────────────────────────────────────────
+    if args.clear_cache:
+        if CACHE_FILE.exists():
+            try:
+                CACHE_FILE.unlink()
+                print(green("✅ Local cache successfully cleared."))
+            except Exception as e:
+                print(red(f"✗ Failed to clear cache: {e}"))
+        else:
+            print(dim("Cache is already empty."))
+        sys.exit(0)
+
+    # ── 2. Load Cache ─────────────────────────────────────────────────────────
+    cache = load_cache()
+    cache_modified = False
 
     bins = list(args.bins)
     if "help" in bins:
@@ -221,85 +274,195 @@ def main():
         print_help()
         sys.exit(0)
 
-    # Determine optimal concurrency if not set
-    concurrency = args.concurrency
-    if concurrency is None:
-        if len(bins) <= 1:
-            concurrency = 1
-        elif len(bins) <= 5:
-            concurrency = len(bins)
-        elif len(bins) <= 50:
-            concurrency = 15
-        else:
-            concurrency = 25
-
-    if concurrency > 1 and len(bins) > 1:
-        concurrency_source = "auto-calculated" if args.concurrency is None else "manual"
-        print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [concurrency: {concurrency} ({concurrency_source})]\n")
-    else:
-        print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [sequential]\n")
-
     results = [None] * len(bins)
 
-    if concurrency > 1 and len(bins) > 1:
-        import concurrent.futures
-        import threading
-        
-        thread_local = threading.local()
-        max_workers = min(concurrency, len(bins))
-        
-        def get_thread_session():
-            if not hasattr(thread_local, "session"):
-                thread_local.session = cffi_requests.Session(
-                    impersonate="chrome124",
-                    curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
-                )
-            return thread_local.session
-        
-        def worker(idx, b):
-            return idx, fetch_bin(b, session=get_thread_session(), proxy=args.proxy)
-            
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(worker, idx, b): b for idx, b in enumerate(bins)}
-            for future in concurrent.futures.as_completed(futures):
-                b = futures[future]
-                try:
-                    idx, result = future.result()
-                    results[idx] = result
-                    if result.get("error"):
-                        err_msg = result["error"]
-                        print(f"  Fetching {bold(b)}... " + red(f"✗  {err_msg}"))
-                    else:
-                        n = len(result["reviews"])
-                        suffix = "s" if n != 1 else ""
-                        print(f"  Fetching {bold(b)}... " + green(f"✓  {n} review{suffix}"))
-                except Exception as e:
-                    print(f"  Fetching {bold(b)}... {red(f'✗  {str(e)}')}")
-    else:
-        # Sequential fallback
+    # ── 3. Offline Mode Lookups ───────────────────────────────────────────────
+    if args.offline:
+        print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [{yellow('offline mode')}]\n")
         for i, b in enumerate(bins):
-            sys.stdout.write(f"  Fetching {bold(b)}... ")
-            sys.stdout.flush()
-            result = fetch_bin(b, session=SESSION, proxy=args.proxy)
-            if result.get("error"):
-                print(red(f"✗  {result['error']}"))
+            if b in cache:
+                cached_entry = cache[b]
+                results[i] = {
+                    "bin": b,
+                    "info": cached_entry.get("info", {}),
+                    "reviews": cached_entry.get("reviews", []),
+                    "offline": True
+                }
+                n = len(results[i]["reviews"])
+                suffix = "s" if n != 1 else ""
+                print(f"  Fetching {bold(b)}... " + green(f"✓  [Loaded from Cache] ({n} review{suffix})"))
             else:
-                n = len(result["reviews"])
-                print(green(f"✓  {n} review{'s' if n!=1 else ''}"))
-            results[i] = result
-            if i < len(bins) - 1:
-                time.sleep(args.delay)
+                results[i] = {
+                    "bin": b,
+                    "error": "Not found in local cache (offline mode)",
+                    "info": {},
+                    "reviews": []
+                }
+                print(f"  Fetching {bold(b)}... " + red("✗  Not cached"))
 
+    else:
+        # Determine optimal concurrency if not set
+        concurrency = args.concurrency
+        if concurrency is None:
+            if len(bins) <= 1:
+                concurrency = 1
+            elif len(bins) <= 5:
+                concurrency = len(bins)
+            elif len(bins) <= 50:
+                concurrency = 15
+            else:
+                concurrency = 25
+
+        if concurrency > 1 and len(bins) > 1:
+            concurrency_source = "auto-calculated" if args.concurrency is None else "manual"
+            print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [concurrency: {concurrency} ({concurrency_source})]\n")
+        else:
+            print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [sequential]\n")
+
+        if concurrency > 1 and len(bins) > 1:
+            import concurrent.futures
+            import threading
+            
+            thread_local = threading.local()
+            max_workers = min(concurrency, len(bins))
+            
+            def get_thread_session():
+                if not hasattr(thread_local, "session"):
+                    thread_local.session = cffi_requests.Session(
+                        impersonate="chrome124",
+                        curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
+                    )
+                return thread_local.session
+            
+            def worker(idx, b):
+                return idx, fetch_bin(b, session=get_thread_session(), proxy=args.proxy)
+                
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(worker, idx, b): b for idx, b in enumerate(bins)}
+                for future in concurrent.futures.as_completed(futures):
+                    b = futures[future]
+                    try:
+                        idx, result = future.result()
+                        if result.get("error"):
+                            err_msg = result["error"]
+                            # Cache fallback
+                            if b in cache:
+                                cached_entry = cache[b]
+                                results[idx] = {
+                                    "bin": b,
+                                    "info": cached_entry.get("info", {}),
+                                    "reviews": cached_entry.get("reviews", []),
+                                    "fallback": True
+                                }
+                                print(f"  Fetching {bold(b)}... " + yellow(f"⚠  Failed ({err_msg}), loaded from cache"))
+                            else:
+                                results[idx] = result
+                                print(f"  Fetching {bold(b)}... " + red(f"✗  {err_msg}"))
+                        else:
+                            results[idx] = result
+                            n = len(result["reviews"])
+                            suffix = "s" if n != 1 else ""
+                            print(f"  Fetching {bold(b)}... " + green(f"✓  {n} review{suffix}"))
+                    except Exception as e:
+                        err_msg = str(e)
+                        if b in cache:
+                            cached_entry = cache[b]
+                            results[idx] = {
+                                "bin": b,
+                                "info": cached_entry.get("info", {}),
+                                "reviews": cached_entry.get("reviews", []),
+                                "fallback": True
+                            }
+                            print(f"  Fetching {bold(b)}... " + yellow(f"⚠  Failed ({err_msg}), loaded from cache"))
+                        else:
+                            results[idx] = {"bin": b, "error": err_msg, "info": {}, "reviews": []}
+                            print(f"  Fetching {bold(b)}... {red(f'✗  {err_msg}')}")
+        else:
+            # Sequential fallback
+            for i, b in enumerate(bins):
+                sys.stdout.write(f"  Fetching {bold(b)}... ")
+                sys.stdout.flush()
+                result = fetch_bin(b, session=SESSION, proxy=args.proxy)
+                if result.get("error"):
+                    err_msg = result["error"]
+                    if b in cache:
+                        cached_entry = cache[b]
+                        results[i] = {
+                            "bin": b,
+                            "info": cached_entry.get("info", {}),
+                            "reviews": cached_entry.get("reviews", []),
+                            "fallback": True
+                        }
+                        print(yellow(f"⚠  Failed ({err_msg}), loaded from cache"))
+                    else:
+                        print(red(f"✗  {err_msg}"))
+                        results[i] = result
+                else:
+                    n = len(result["reviews"])
+                    print(green(f"✓  {n} review{'s' if n!=1 else ''}"))
+                    results[i] = result
+                if i < len(bins) - 1:
+                    time.sleep(args.delay)
+
+    # ── 4. Merge Successful Online Lookups into Cache ─────────────────────────
+    if not args.offline:
+        for r in results:
+            if r is not None and not r.get("error") and not r.get("offline") and not r.get("fallback"):
+                b = r["bin"]
+                cached_entry = cache.get(b, {})
+                
+                # Fingerprint existing cached reviews
+                cached_reviews = cached_entry.get("reviews", [])
+                seen_fps = set()
+                for rev in cached_reviews:
+                    fp = (rev.get("user", ""), rev.get("rating", ""), rev.get("text", ""), rev.get("time", ""))
+                    seen_fps.add(fp)
+                
+                # Merge and keep only unique reviews
+                new_reviews = r.get("reviews", [])
+                merged_reviews = list(cached_reviews)
+                added_any = False
+                for rev in new_reviews:
+                    fp = (rev.get("user", ""), rev.get("rating", ""), rev.get("text", ""), rev.get("time", ""))
+                    if fp not in seen_fps:
+                        merged_reviews.append(rev)
+                        seen_fps.add(fp)
+                        added_any = True
+                
+                # Sort reviews by date descending (newest first)
+                merged_reviews.sort(key=lambda x: x.get("time", ""), reverse=True)
+                
+                # Prepare updated entry
+                updated_entry = {
+                    "info": r.get("info", {}),
+                    "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "reviews": merged_reviews
+                }
+                
+                # Compare to detect changes
+                if (b not in cache or 
+                    cached_entry.get("info") != updated_entry["info"] or 
+                    len(cached_reviews) != len(merged_reviews) or 
+                    added_any):
+                    cache[b] = updated_entry
+                    cache_modified = True
+
+    # ── 5. Print Output Results ───────────────────────────────────────────────
     for r in results:
         if r is not None:
             print_bin(r)
 
+    # ── 6. JSON Export Check ──────────────────────────────────────────────────
     if args.json:
         # Filter out failed index spots just in case
         valid_results = [r for r in results if r is not None]
         out = {r["bin"]: {"info": r["info"], "reviews": r["reviews"]} for r in valid_results}
         Path(args.json).write_text(json.dumps(out, indent=2))
         print(f"{green('✅')} JSON saved to {bold(args.json)}")
+
+    # ── 7. Save Cache (Only if modified, atomic/corruption-proof) ─────────────
+    if cache_modified:
+        save_cache(cache)
 
     print(f"{green('✅')} Done — {len(results)} BIN(s) checked.\n")
 
