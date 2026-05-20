@@ -159,8 +159,9 @@ def print_help():
     print(f"\n{bold(yellow('OPTIONS:'))}")
     print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
     print(f"  {green('-j, --json')} {cyan('FILE')}             Export results as a structured JSON file.")
-    print(f"  {green('-c, --concurrency')} {cyan('NUM')}       Number of concurrent lookup threads (default: {bold('5')}).")
-    print(f"                           Set to {bold('1')} for sequential processing.")
+    print(f"  {green('-c, --concurrency')} {cyan('NUM')}       Number of concurrent lookup threads.")
+    print(f"                           Auto-calculates based on BIN count by default.")
+    print(f"                           Set to 1 for sequential processing.")
     print(f"  {green('--proxy')} {cyan('URL')}                  Proxy URL to route through (e.g. http://1.2.3.4:8080).")
     print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
@@ -188,7 +189,7 @@ def parse_args():
     p.add_argument("--json", "-j", metavar="FILE", help="Save results to JSON file")
     p.add_argument("--proxy", metavar="URL", help="Proxy URL to bypass blocks (e.g. http://1.2.3.4:8080)")
     p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between sequential requests (default: 0.3s)")
-    p.add_argument("--concurrency", "-c", type=int, default=5, metavar="NUM", help="Number of concurrent lookups (default: 5, set to 1 for sequential)")
+    p.add_argument("--concurrency", "-c", type=int, default=None, metavar="NUM", help="Number of concurrent lookups (default: auto, set to 1 for sequential)")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
     return p.parse_args()
@@ -220,16 +221,32 @@ def main():
         print_help()
         sys.exit(0)
 
-    print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)\n")
+    # Determine optimal concurrency if not set
+    concurrency = args.concurrency
+    if concurrency is None:
+        if len(bins) <= 1:
+            concurrency = 1
+        elif len(bins) <= 5:
+            concurrency = len(bins)
+        elif len(bins) <= 50:
+            concurrency = 15
+        else:
+            concurrency = 25
+
+    if concurrency > 1 and len(bins) > 1:
+        concurrency_source = "auto-calculated" if args.concurrency is None else "manual"
+        print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [concurrency: {concurrency} ({concurrency_source})]\n")
+    else:
+        print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)  [sequential]\n")
 
     results = [None] * len(bins)
 
-    if args.concurrency > 1 and len(bins) > 1:
+    if concurrency > 1 and len(bins) > 1:
         import concurrent.futures
         import threading
         
         thread_local = threading.local()
-        max_workers = min(args.concurrency, len(bins))
+        max_workers = min(concurrency, len(bins))
         
         def get_thread_session():
             if not hasattr(thread_local, "session"):
