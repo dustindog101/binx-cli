@@ -42,13 +42,15 @@ HEADERS = {
 }
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
-def fetch_bin(bin_number: str, proxy: str = None) -> dict:
+def fetch_bin(bin_number: str, session=None, proxy: str = None) -> dict:
+    if session is None:
+        session = SESSION
     proxies = {"http": proxy, "https": proxy} if proxy else None
     kwargs = dict(headers=HEADERS, timeout=20, proxies=proxies)
 
     # BIN info
     try:
-        r = SESSION.get(f"{API}/bins/{bin_number}", **kwargs)
+        r = session.get(f"{API}/bins/{bin_number}", **kwargs)
         if r.status_code != 200:
             return {"bin": bin_number, "error": f"HTTP {r.status_code}", "info": {}, "reviews": []}
         info_data = r.json().get("data", {})
@@ -62,7 +64,7 @@ def fetch_bin(bin_number: str, proxy: str = None) -> dict:
     while True:
         try:
             url = f"{API}/bins/{bin_number}/reviews?offset={offset}&limit={limit}"
-            rr = SESSION.get(url, **kwargs)
+            rr = session.get(url, **kwargs)
             if rr.status_code != 200:
                 break
             
@@ -145,7 +147,8 @@ def parse_args():
     p.add_argument("--file", "-f", metavar="FILE", help="File with one BIN per line")
     p.add_argument("--json", "-j", metavar="FILE", help="Save results to JSON file")
     p.add_argument("--proxy", metavar="URL", help="Proxy URL to bypass blocks (e.g. http://1.2.3.4:8080)")
-    p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between requests (default: 0.3s)")
+    p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between sequential requests (default: 0.3s)")
+    p.add_argument("--concurrency", "-c", type=int, default=5, metavar="NUM", help="Number of concurrent lookups (default: 5, set to 1 for sequential)")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     return p.parse_args()
 
@@ -170,25 +173,58 @@ def main():
 
     print(f"\n{bold('🔍 binx-cli')}  —  {len(bins)} BIN(s)\n")
 
-    results = []
-    for i, b in enumerate(bins):
-        sys.stdout.write(f"  Fetching {bold(b)}... ")
-        sys.stdout.flush()
-        result = fetch_bin(b, proxy=args.proxy)
-        if result.get("error"):
-            print(red(f"✗  {result['error']}"))
-        else:
-            n = len(result["reviews"])
-            print(green(f"✓  {n} review{'s' if n!=1 else ''}"))
-        results.append(result)
-        if i < len(bins) - 1:
-            time.sleep(args.delay)
+    results = [None] * len(bins)
+
+    if args.concurrency > 1 and len(bins) > 1:
+        import concurrent.futures
+        max_workers = min(args.concurrency, len(bins))
+        
+        def worker(idx, b):
+            local_session = cffi_requests.Session(
+                impersonate="chrome124",
+                curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
+            )
+            return idx, fetch_bin(b, session=local_session, proxy=args.proxy)
+            
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(worker, idx, b): b for idx, b in enumerate(bins)}
+            for future in concurrent.futures.as_completed(futures):
+                b = futures[future]
+                try:
+                    idx, result = future.result()
+                    results[idx] = result
+                    if result.get("error"):
+                        err_msg = result["error"]
+                        print(f"  Fetching {bold(b)}... " + red(f"✗  {err_msg}"))
+                    else:
+                        n = len(result["reviews"])
+                        suffix = "s" if n != 1 else ""
+                        print(f"  Fetching {bold(b)}... " + green(f"✓  {n} review{suffix}"))
+                except Exception as e:
+                    print(f"  Fetching {bold(b)}... {red(f'✗  {str(e)}')}")
+    else:
+        # Sequential fallback
+        for i, b in enumerate(bins):
+            sys.stdout.write(f"  Fetching {bold(b)}... ")
+            sys.stdout.flush()
+            result = fetch_bin(b, session=SESSION, proxy=args.proxy)
+            if result.get("error"):
+                print(red(f"✗  {result['error']}"))
+            else:
+                n = len(result["reviews"])
+                print(green(f"✓  {n} review{'s' if n!=1 else ''}"))
+            results[i] = result
+            if i < len(bins) - 1:
+                time.sleep(args.delay)
 
     for r in results:
-        print_bin(r)
+        if r is not None:
+            print_bin(r)
 
     if args.json:
-        out = {r["bin"]: {"info": r["info"], "reviews": r["reviews"]} for r in results}
+        # Filter out failed index spots just in case
+        valid_results = [r for r in results if r is not None]
+        out = {r["bin"]: {"info": r["info"], "reviews": r["reviews"]} for r in valid_results}
         Path(args.json).write_text(json.dumps(out, indent=2))
         print(f"{green('✅')} JSON saved to {bold(args.json)}")
 
