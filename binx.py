@@ -182,9 +182,11 @@ def print_help():
     print(f"  python3 binx.py {cyan('<bin1> [bin2] ...')} [options]")
     print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
     print(f"  python3 binx.py {cyan('help')}")
+    print(f"  python3 binx.py {cyan('list')}")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
     print(f"  {green('help')}                        Show this beautiful, customized help screen.")
+    print(f"  {green('list')}                        Display all the BINs saved in the local cache.")
 
     print(f"\n{bold(yellow('OPTIONS:'))}")
     print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
@@ -195,6 +197,7 @@ def print_help():
     print(f"  {green('--proxy')} {cyan('URL')}                  Proxy URL to route through (e.g. http://1.2.3.4:8080).")
     print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
     print(f"  {green('--offline')} / {green('--cache-only')}       Search and display exclusively from the local cache.")
+    print(f"  {green('--list-cache')} / {green('--list')}      Display all the BINs saved in the local cache.")
     print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
     print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
@@ -212,6 +215,9 @@ def print_help():
     print(f"  {dim('# Query in fully offline mode from local reviews database')}")
     print(f"  python3 binx.py {cyan('486796')} --offline")
     print(f"  ")
+    print(f"  {dim('# List all cached BINs saved in local database')}")
+    print(f"  python3 binx.py {cyan('list')}")
+    print(f"  ")
     print(f"  {dim('# Route requests through a proxy with no color')}")
     print(f"  python3 binx.py {cyan('400022')} --proxy http://127.0.0.1:8888 --no-color")
     print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
@@ -226,6 +232,7 @@ def parse_args():
     p.add_argument("--delay", type=float, default=0.3, metavar="SECS", help="Delay between sequential requests (default: 0.3s)")
     p.add_argument("--concurrency", "-c", type=int, default=None, metavar="NUM", help="Number of concurrent lookups (default: auto, set to 1 for sequential)")
     p.add_argument("--offline", "--cache-only", action="store_true", help="Search and display exclusively from the local cache")
+    p.add_argument("--list-cache", "--list", action="store_true", help="Display all the BINs saved in the local cache")
     p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
@@ -260,6 +267,43 @@ def main():
     bins = list(args.bins)
     if "help" in bins:
         print_help()
+        sys.exit(0)
+
+    if args.list_cache or "list" in bins or "list-cache" in bins:
+        if not cache:
+            print(dim("\n  (no BINs saved in cache yet)\n"))
+            sys.exit(0)
+        
+        sorted_bins = sorted(cache.keys())
+        print(f"\n{bold('📦 Saved BINs in Local Cache')}  —  {bold(len(sorted_bins))} BIN(s) total\n")
+        
+        h_bin     = "BIN"
+        h_brand   = "Brand"
+        h_type    = "Type"
+        h_country = "Country"
+        h_bank    = "Bank"
+        h_reviews = "Reviews"
+        
+        print(f"  {bold(h_bin.ljust(8))}  {bold(h_brand.ljust(10))}  {bold(h_type.ljust(8))}  {bold(h_country.ljust(15))}  {bold(h_bank.ljust(35))}  {bold(h_reviews)}")
+        print(dim("  " + "─" * 90))
+        
+        total_reviews = 0
+        for b in sorted_bins:
+            entry = cache[b]
+            info = entry.get("info", {})
+            reviews = entry.get("reviews", [])
+            rev_len = len(reviews)
+            total_reviews += rev_len
+            
+            brand   = (info.get("brand") or "UNKNOWN")[:10]
+            type_   = (info.get("type") or "UNKNOWN")[:8]
+            country = (info.get("country_name") or "UNKNOWN")[:15]
+            bank    = (info.get("bank") or "UNKNOWN")[:35]
+            
+            print(f"  {cyan(b.ljust(8))}  {brand.ljust(10)}  {type_.ljust(8)}  {country.ljust(15)}  {dim(bank.ljust(35))}  {green(str(rev_len).rjust(7))}")
+            
+        print(dim("  " + "─" * 90))
+        print(f"  {bold('Total Database Stats:')} {green(str(total_reviews))} reviews across {bold(str(len(sorted_bins)))} cached BIN(s)\n")
         sys.exit(0)
 
     if args.file:
