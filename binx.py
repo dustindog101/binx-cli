@@ -42,7 +42,7 @@ HEADERS = {
 }
 
 # ── Cache Database Setup ──────────────────────────────────────────────────────
-CACHE_FILE = Path("binx_cache.json")
+CACHE_FILE = Path(__file__).resolve().parent / "binx_cache.json"
 
 def load_cache() -> dict:
     if not CACHE_FILE.exists():
@@ -55,8 +55,8 @@ def load_cache() -> dict:
 
 def save_cache(cache: dict):
     try:
-        # Atomic, corruption-proof save
-        with tempfile.NamedTemporaryFile("w", delete=False, dir=".", encoding="utf-8") as tf:
+        # Atomic, corruption-proof save in the same directory as CACHE_FILE
+        with tempfile.NamedTemporaryFile("w", delete=False, dir=CACHE_FILE.parent, encoding="utf-8") as tf:
             json.dump(cache, tf, indent=2, ensure_ascii=False)
             temp_path = tf.name
         os.replace(temp_path, CACHE_FILE)
