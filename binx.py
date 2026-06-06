@@ -189,6 +189,7 @@ def print_help():
     print(f"  python3 binx.py {cyan('favorites remove')} <bin1> [bin2] ...")
     print(f"  python3 binx.py {cyan('favorites clear')}")
     print(f"  python3 binx.py {cyan('remove')} <bin1> [bin2] ...")
+    print(f"  python3 binx.py {cyan('clean')} <text_or_file>")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
     print(f"  {green('help')}                        Show this beautiful, customized help screen.")
@@ -198,6 +199,7 @@ def print_help():
     print(f"  {green('favorites remove')} <bin1> ...   Remove one or more BINs from the favorites list.")
     print(f"  {green('favorites clear')}            Clear all favorites from the local database.")
     print(f"  {green('remove')} <bin1> ...             Remove one or more BINs entirely from the local cache.")
+    print(f"  {green('clean')} <text_or_file>        Extract and clean BINs from raw text or a file path.")
 
     print(f"\n{bold(yellow('OPTIONS:'))}")
     print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
@@ -212,6 +214,7 @@ def print_help():
     print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite status for one or more BINs.")
     print(f"  {green('--favs')} / {green('--favorites')}        Display all favorited BINs.")
     print(f"  {green('--remove')} {cyan('BIN')}                 Remove one or more BINs entirely from the local cache.")
+    print(f"  {green('--clean')} {cyan('TEXT_OR_FILE')}         Extract and clean BINs from raw text or a file path.")
     print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
     print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
@@ -243,6 +246,12 @@ def print_help():
     print(f"  ")
     print(f"  {dim('# Delete specific BINs entirely from local cache')}")
     print(f"  python3 binx.py {cyan('remove 486796 400895')}")
+    print(f"  ")
+    print(f"  {dim('# Clean and extract BINs from raw text')}")
+    print(f"  python3 binx.py {cyan('clean \"cards: 4867961234567890, 4008951234567890\"')}")
+    print(f"  ")
+    print(f"  {dim('# Clean and extract BINs from a text file')}")
+    print(f"  python3 binx.py {cyan('clean dump.txt')}")
     print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -259,6 +268,7 @@ def parse_args():
     p.add_argument("--fav", "--favorite", metavar="BIN", nargs="*", default=None, help="Toggle favorite status for one or more BINs")
     p.add_argument("--favs", "--favorites", action="store_true", help="Display all favorited BINs")
     p.add_argument("--remove", metavar="BIN", nargs="*", default=None, help="Remove one or more BINs entirely from the local cache")
+    p.add_argument("--clean", metavar="TEXT_OR_FILE", nargs="*", default=None, help="Extract and clean BINs from raw text or a file path")
     p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
@@ -293,6 +303,51 @@ def main():
     bins = list(args.bins)
     if "help" in bins:
         print_help()
+        sys.exit(0)
+
+    # ── Clean Command ─────────────────────────────────────────────────────────
+    if args.clean is not None or (bins and bins[0] == "clean"):
+        clean_targets = args.clean if args.clean is not None else bins[1:]
+        if not clean_targets:
+            print(red("Error: Please specify raw text or a file path to clean."))
+            sys.exit(1)
+            
+        import re
+        text_to_clean = ""
+        # Check if single target matches an existing file path
+        if len(clean_targets) == 1 and os.path.exists(clean_targets[0]):
+            try:
+                file_path = Path(clean_targets[0]).resolve()
+                text_to_clean = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:
+                print(red(f"Error reading file {clean_targets[0]}: {e}"))
+                sys.exit(1)
+        else:
+            text_to_clean = " ".join(clean_targets)
+            
+        found_nums = re.findall(r"\b\d{6,19}\b", text_to_clean)
+        
+        cleaned_bins = []
+        for num in found_nums:
+            if 6 <= len(num) <= 8:
+                cleaned_bins.append(num)
+            elif len(num) > 8:
+                cleaned_bins.append(num[:6])
+                
+        seen_bins = set()
+        unique_bins = []
+        for b in cleaned_bins:
+            if b not in seen_bins:
+                seen_bins.add(b)
+                unique_bins.append(b)
+                
+        if not unique_bins:
+            print(dim("No valid BINs found in the text."))
+            sys.exit(0)
+            
+        print(f"\n{bold(green('🧼 Cleaned BINs'))}  —  {bold(len(unique_bins))} unique BIN(s) found:\n")
+        print(" ".join(unique_bins))
+        print()
         sys.exit(0)
 
     # ── Favorites Commands ────────────────────────────────────────────────────
