@@ -184,14 +184,20 @@ def print_help():
     print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
     print(f"  python3 binx.py {cyan('help')}")
     print(f"  python3 binx.py {cyan('list')}")
-    print(f"  python3 binx.py {cyan('fav')} <bin1> [bin2] ...")
-    print(f"  python3 binx.py {cyan('favs')}")
+    print(f"  python3 binx.py {cyan('favorite')} <bin1> [bin2] ...")
+    print(f"  python3 binx.py {cyan('favorites')}")
+    print(f"  python3 binx.py {cyan('favorites remove')} <bin1> [bin2] ...")
+    print(f"  python3 binx.py {cyan('favorites clear')}")
+    print(f"  python3 binx.py {cyan('remove')} <bin1> [bin2] ...")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
     print(f"  {green('help')}                        Show this beautiful, customized help screen.")
     print(f"  {green('list')}                        Display all the BINs saved in the local cache.")
-    print(f"  {green('fav')} <bin1> [bin2] ...         Toggle favorite status for one or more BINs.")
-    print(f"  {green('favs')}                       Display all favorited BINs saved in the local cache.")
+    print(f"  {green('favorite')} <bin1> ...          Toggle favorite status for one or more BINs.")
+    print(f"  {green('favorites')}                   Display all favorited BINs saved in the local cache.")
+    print(f"  {green('favorites remove')} <bin1> ...   Remove one or more BINs from the favorites list.")
+    print(f"  {green('favorites clear')}            Clear all favorites from the local database.")
+    print(f"  {green('remove')} <bin1> ...             Remove one or more BINs entirely from the local cache.")
 
     print(f"\n{bold(yellow('OPTIONS:'))}")
     print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
@@ -205,6 +211,7 @@ def print_help():
     print(f"  {green('--list-cache')} / {green('--list')}      Display all the BINs saved in the local cache.")
     print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite status for one or more BINs.")
     print(f"  {green('--favs')} / {green('--favorites')}        Display all favorited BINs.")
+    print(f"  {green('--remove')} {cyan('BIN')}                 Remove one or more BINs entirely from the local cache.")
     print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
     print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
@@ -213,26 +220,29 @@ def print_help():
     print(f"  {dim('# Lookup a single BIN')}")
     print(f"  python3 binx.py {cyan('400022')}")
     print(f"  ")
-    print(f"  {dim('# Lookup multiple BINs concurrently with custom workers')}")
+    print(f"  {dim('# Lookup multiple BINs concurrently')}")
     print(f"  python3 binx.py {cyan('400022 486796 432359')} -c 10")
     print(f"  ")
-    print(f"  {dim('# Bulk process from a file and save results to JSON')}")
-    print(f"  python3 binx.py {cyan('-f bins.txt')} -j output.json")
-    print(f"  ")
-    print(f"  {dim('# Query in fully offline mode from local reviews database')}")
+    print(f"  {dim('# Query in fully offline mode from local database')}")
     print(f"  python3 binx.py {cyan('486796')} --offline")
     print(f"  ")
-    print(f"  {dim('# List all cached BINs saved in local database')}")
+    print(f"  {dim('# List all cached BINs saved locally')}")
     print(f"  python3 binx.py {cyan('list')}")
     print(f"  ")
     print(f"  {dim('# Toggle favorite status for BINs')}")
-    print(f"  python3 binx.py {cyan('fav 486796 400895')}")
+    print(f"  python3 binx.py {cyan('favorite 486796 400895')}")
     print(f"  ")
     print(f"  {dim('# View all favorited BINs')}")
-    print(f"  python3 binx.py {cyan('favs')}")
+    print(f"  python3 binx.py {cyan('favorites')}")
     print(f"  ")
-    print(f"  {dim('# Route requests through a proxy with no color')}")
-    print(f"  python3 binx.py {cyan('400022')} --proxy http://127.0.0.1:8888 --no-color")
+    print(f"  {dim('# Remove specific BINs from favorites')}")
+    print(f"  python3 binx.py {cyan('favorites remove 486796')}")
+    print(f"  ")
+    print(f"  {dim('# Clear all favorited BINs')}")
+    print(f"  python3 binx.py {cyan('favorites clear')}")
+    print(f"  ")
+    print(f"  {dim('# Delete specific BINs entirely from local cache')}")
+    print(f"  python3 binx.py {cyan('remove 486796 400895')}")
     print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
 
 # ── Args ──────────────────────────────────────────────────────────────────────
@@ -248,6 +258,7 @@ def parse_args():
     p.add_argument("--list-cache", "--list", action="store_true", help="Display all the BINs saved in the local cache")
     p.add_argument("--fav", "--favorite", metavar="BIN", nargs="*", default=None, help="Toggle favorite status for one or more BINs")
     p.add_argument("--favs", "--favorites", action="store_true", help="Display all favorited BINs")
+    p.add_argument("--remove", metavar="BIN", nargs="*", default=None, help="Remove one or more BINs entirely from the local cache")
     p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
@@ -286,6 +297,35 @@ def main():
 
     # ── Favorites Commands ────────────────────────────────────────────────────
     if args.favs or (bins and bins[0] in ("favs", "favorites")):
+        if bins and len(bins) > 1:
+            if bins[1] == "remove":
+                remove_targets = bins[2:]
+                if not remove_targets:
+                    print(red("Error: Please specify one or more BINs to remove from favorites."))
+                    sys.exit(1)
+                cache_modified = False
+                for b in remove_targets:
+                    if b in cache and cache[b].get("favorite", False):
+                        cache[b]["favorite"] = False
+                        cache_modified = True
+                        print(f"  ☆ {bold(b)} has been removed from favorites.")
+                    else:
+                        print(dim(f"  BIN {b} is not in favorites."))
+                if cache_modified:
+                    save_cache(cache)
+                sys.exit(0)
+            elif bins[1] == "clear":
+                cache_modified = False
+                for b, entry in cache.items():
+                    if entry.get("favorite", False):
+                        entry["favorite"] = False
+                        cache_modified = True
+                if cache_modified:
+                    save_cache(cache)
+                    print(green("⭐ All favorites successfully cleared."))
+                else:
+                    print(dim("No favorites to clear."))
+                sys.exit(0)
         fav_bins = [b for b, entry in cache.items() if entry.get("favorite", False)]
         if not fav_bins:
             print(dim("\n  (no favorited BINs saved yet)\n"))
@@ -368,6 +408,24 @@ def main():
             star_char = yellow("★") if new_fav else "☆"
             print(f"  {star_char} {bold(b)} has been {status_str} favorites.")
             
+        if cache_modified:
+            save_cache(cache)
+        sys.exit(0)
+
+    # ── Remove Cache Commands ──────────────────────────────────────────────────
+    if args.remove is not None or (bins and bins[0] == "remove"):
+        remove_targets = args.remove if args.remove is not None else bins[1:]
+        if not remove_targets:
+            print(red("Error: Please specify one or more BINs to remove from cache."))
+            sys.exit(1)
+        cache_modified = False
+        for b in remove_targets:
+            if b in cache:
+                del cache[b]
+                cache_modified = True
+                print(f"  🗑️  {bold(b)} has been deleted from cache.")
+            else:
+                print(dim(f"  BIN {b} is not in cache."))
         if cache_modified:
             save_cache(cache)
         sys.exit(0)
