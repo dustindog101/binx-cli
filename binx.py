@@ -138,7 +138,8 @@ def print_bin(result: dict):
     elif result.get("fallback"):
         stamp = f"  {yellow('[OFFLINE FALLBACK]')}"
         
-    print(f"  {bold('BIN')} {bold(result['bin'])}  ·  {dim(bank)}{stamp}")
+    fav_star = f" {yellow('★')}" if result.get("favorite") else ""
+    print(f"  {bold('BIN')} {bold(result['bin'])}{fav_star}  ·  {dim(bank)}{stamp}")
     print(cyan("═" * 62))
 
     if result.get("error"):
@@ -183,10 +184,14 @@ def print_help():
     print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
     print(f"  python3 binx.py {cyan('help')}")
     print(f"  python3 binx.py {cyan('list')}")
+    print(f"  python3 binx.py {cyan('fav')} <bin1> [bin2] ...")
+    print(f"  python3 binx.py {cyan('favs')}")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
     print(f"  {green('help')}                        Show this beautiful, customized help screen.")
     print(f"  {green('list')}                        Display all the BINs saved in the local cache.")
+    print(f"  {green('fav')} <bin1> [bin2] ...         Toggle favorite status for one or more BINs.")
+    print(f"  {green('favs')}                       Display all favorited BINs saved in the local cache.")
 
     print(f"\n{bold(yellow('OPTIONS:'))}")
     print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
@@ -198,6 +203,8 @@ def print_help():
     print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
     print(f"  {green('--offline')} / {green('--cache-only')}       Search and display exclusively from the local cache.")
     print(f"  {green('--list-cache')} / {green('--list')}      Display all the BINs saved in the local cache.")
+    print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite status for one or more BINs.")
+    print(f"  {green('--favs')} / {green('--favorites')}        Display all favorited BINs.")
     print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
     print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
     print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
@@ -218,6 +225,12 @@ def print_help():
     print(f"  {dim('# List all cached BINs saved in local database')}")
     print(f"  python3 binx.py {cyan('list')}")
     print(f"  ")
+    print(f"  {dim('# Toggle favorite status for BINs')}")
+    print(f"  python3 binx.py {cyan('fav 486796 400895')}")
+    print(f"  ")
+    print(f"  {dim('# View all favorited BINs')}")
+    print(f"  python3 binx.py {cyan('favs')}")
+    print(f"  ")
     print(f"  {dim('# Route requests through a proxy with no color')}")
     print(f"  python3 binx.py {cyan('400022')} --proxy http://127.0.0.1:8888 --no-color")
     print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
@@ -233,6 +246,8 @@ def parse_args():
     p.add_argument("--concurrency", "-c", type=int, default=None, metavar="NUM", help="Number of concurrent lookups (default: auto, set to 1 for sequential)")
     p.add_argument("--offline", "--cache-only", action="store_true", help="Search and display exclusively from the local cache")
     p.add_argument("--list-cache", "--list", action="store_true", help="Display all the BINs saved in the local cache")
+    p.add_argument("--fav", "--favorite", metavar="BIN", nargs="*", default=None, help="Toggle favorite status for one or more BINs")
+    p.add_argument("--favs", "--favorites", action="store_true", help="Display all favorited BINs")
     p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
     p.add_argument("--no-color", action="store_true", help="Disable color output")
     p.add_argument("-h", "--help", action="store_true", help="Show this beautiful help message and exit")
@@ -267,6 +282,94 @@ def main():
     bins = list(args.bins)
     if "help" in bins:
         print_help()
+        sys.exit(0)
+
+    # ── Favorites Commands ────────────────────────────────────────────────────
+    if args.favs or (bins and bins[0] in ("favs", "favorites")):
+        fav_bins = [b for b, entry in cache.items() if entry.get("favorite", False)]
+        if not fav_bins:
+            print(dim("\n  (no favorited BINs saved yet)\n"))
+            sys.exit(0)
+            
+        sorted_bins = sorted(fav_bins)
+        print(f"\n{bold(yellow('⭐ Favorited BINs in Local Cache'))}  —  {bold(len(sorted_bins))} BIN(s) total\n")
+        
+        h_bin     = "BIN"
+        h_brand   = "Brand"
+        h_type    = "Type"
+        h_country = "Country"
+        h_bank    = "Bank"
+        h_reviews = "Reviews"
+        
+        print(f"  {bold(h_bin.ljust(10))}  {bold(h_brand.ljust(10))}  {bold(h_type.ljust(8))}  {bold(h_country.ljust(15))}  {bold(h_bank.ljust(35))}  {bold(h_reviews)}")
+        print(dim("  " + "─" * 95))
+        
+        total_reviews = 0
+        for b in sorted_bins:
+            entry = cache[b]
+            info = entry.get("info", {})
+            reviews = entry.get("reviews", [])
+            rev_len = len(reviews)
+            total_reviews += rev_len
+            
+            brand   = (info.get("brand") or "UNKNOWN")[:10]
+            type_   = (info.get("type") or "UNKNOWN")[:8]
+            country = (info.get("country_name") or "UNKNOWN")[:15]
+            bank    = (info.get("bank") or "UNKNOWN")[:35]
+            
+            bin_display = f"{b} ★"
+            print(f"  {cyan(bin_display.ljust(10))}  {brand.ljust(10)}  {type_.ljust(8)}  {country.ljust(15)}  {dim(bank.ljust(35))}  {green(str(rev_len).rjust(7))}")
+            
+        print(dim("  " + "─" * 95))
+        print(f"  {bold('Total Favorites Stats:')} {green(str(total_reviews))} reviews across {bold(str(len(sorted_bins)))} favorited BIN(s)\n")
+        sys.exit(0)
+
+    if args.fav is not None or (bins and bins[0] in ("fav", "favorite")):
+        fav_targets = args.fav if args.fav is not None else bins[1:]
+        if not fav_targets:
+            print(red("Error: Please specify one or more BINs to favorite."))
+            sys.exit(1)
+            
+        for b in fav_targets:
+            if not b.isdigit() or not (4 <= len(b) <= 8):
+                print(yellow(f"⚠  Skipping invalid BIN: {b}"))
+                continue
+                
+            entry = cache.get(b, {})
+            current_fav = entry.get("favorite", False)
+            new_fav = not current_fav
+            
+            if b not in cache:
+                print(dim(f"  BIN {b} not in cache. Fetching details online to save..."))
+                try:
+                    res = fetch_bin(b, session=SESSION, proxy=args.proxy)
+                    if not res.get("error"):
+                        entry = {
+                            "info": res.get("info", {}),
+                            "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "reviews": res.get("reviews", [])
+                        }
+                    else:
+                        entry = {
+                            "info": {},
+                            "reviews": []
+                        }
+                except Exception:
+                    entry = {
+                        "info": {},
+                        "reviews": []
+                    }
+            
+            entry["favorite"] = new_fav
+            cache[b] = entry
+            cache_modified = True
+            
+            status_str = green("Added to") if new_fav else red("Removed from")
+            star_char = yellow("★") if new_fav else "☆"
+            print(f"  {star_char} {bold(b)} has been {status_str} favorites.")
+            
+        if cache_modified:
+            save_cache(cache)
         sys.exit(0)
 
     if args.list_cache or "list" in bins or "list-cache" in bins:
@@ -500,6 +603,7 @@ def main():
     # ── 5. Print Output Results ───────────────────────────────────────────────
     for r in results:
         if r is not None:
+            r["favorite"] = cache.get(r["bin"], {}).get("favorite", False)
             print_bin(r)
 
     # ── 6. JSON Export Check ──────────────────────────────────────────────────
