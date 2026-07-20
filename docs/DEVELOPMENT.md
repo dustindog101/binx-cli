@@ -75,6 +75,39 @@ __version__ = "1.2.0"
 
 **Always bump `__version__` before cutting a release.** The update system compares this against GitHub release tags.
 
+## Publishing to npm
+
+The npm package is a thin wrapper around `binx.py` (requires Python 3.8+).
+
+### One-time setup
+
+```bash
+npm login
+```
+
+### Publish (after bumping version)
+
+Version must match `__version__` in `binx.py` and `version` in `package.json`.
+
+```bash
+# 1. Bump versions in binx.py and package.json
+# 2. Commit and tag
+git tag v1.2.1
+git push origin main --tags
+
+# 3. Publish to npm
+npm publish --access public
+```
+
+### Verify
+
+```bash
+npm view binx-cli version
+npx binx-cli --version
+```
+
+---
+
 ## Releasing a new version
 
 ### 1. Make your changes

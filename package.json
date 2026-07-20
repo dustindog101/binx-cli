@@ -1,17 +1,32 @@
 {
-  "name": "fractal-plasma",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+  "name": "binx-cli",
+  "version": "1.2.1",
+  "description": "Fast CLI for BIN lookup and crowdsourced card reviews from binx.cz",
+  "keywords": ["bin", "cli", "binx", "card", "lookup"],
+  "homepage": "https://github.com/dustindog101/binx-cli#readme",
+  "bugs": {
+    "url": "https://github.com/dustindog101/binx-cli/issues"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "dependencies": {
-    "cli-table3": "^0.6.5",
-    "playwright": "^1.59.1"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dustindog101/binx-cli.git"
+  },
+  "license": "MIT",
+  "author": "dustindog101",
+  "engines": {
+    "node": ">=14"
+  },
+  "bin": {
+    "binx": "bin/binx.js"
+  },
+  "files": [
+    "bin/binx.js",
+    "binx.py",
+    "requirements.txt",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node -e \"console.log('binx-cli installed. Requires Python 3.8+. Run: binx help')\""
   }
 }

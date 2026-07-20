@@ -26,7 +26,16 @@
 
 ## Installation
 
-**Recommended (one-liner):**
+**npm (recommended):**
+
+```bash
+npm install -g binx-cli
+binx help
+```
+
+Requires Python 3.8+ on your PATH. The npm package auto-installs `curl_cffi` on first run.
+
+**curl install script:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dustindog101/binx-cli/main/install.sh | bash

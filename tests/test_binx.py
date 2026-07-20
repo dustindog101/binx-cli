@@ -50,6 +50,14 @@ def test_compare_versions():
     assert binx._compare_versions("1.1.0", "1.1.0") == "up_to_date"
 
 
+def test_resolve_unknown_command():
+    assert binx.resolve_unknown_command(["403306"]) is None
+    assert binx.resolve_unknown_command(["list"]) is None
+    assert binx.resolve_unknown_command(["update", "install"]) is None
+    assert binx.resolve_unknown_command(["foo"]) == "foo"
+    assert binx.resolve_unknown_command(["update", "foo"]) == "foo"
+
+
 def test_check_for_updates_offline_preserves_cache(monkeypatch):
     monkeypatch.setattr(binx, "fetch_latest_release", lambda *a, **k: (None, "offline"))
     monkeypatch.setattr(binx, "_read_update_cache", lambda: {

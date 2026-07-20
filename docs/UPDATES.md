@@ -41,6 +41,8 @@ binx update install
 ## Fresh install
 
 ```bash
+npm install -g binx-cli
+# or
 curl -fsSL https://raw.githubusercontent.com/dustindog101/binx-cli/main/install.sh | bash
 ```
 

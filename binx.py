@@ -14,7 +14,7 @@ import sys, json, time, argparse, os, tempfile, re, shutil, subprocess, tarfile
 from pathlib import Path
 from typing import Optional, List, Tuple
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 DOMAIN = "binx.cz"
 GITHUB_REPO = "dustindog101/binx-cli"
 UPDATE_CHECK_TTL = 86_400  # 24h
@@ -317,7 +317,8 @@ def handle_update_command(subcmd: Optional[str] = None, force: bool = False) -> 
     if sub == "install":
         return perform_update(force=force)
     print(red(f"Unknown update command: {sub}"))
-    print(dim("Usage: binx update [check|install]"))
+    print(dim("Usage: binx update [check|install]\n"))
+    print_help()
     return 1
 
 def _is_bin(tok: str) -> bool:
@@ -477,94 +478,98 @@ def print_bin(result: dict):
         print(f"  {dim('·' * 30)}")
     print()
 
+TOP_LEVEL_COMMANDS = frozenset({
+    "help", "list", "list-cache", "favorite", "fav",
+    "favorites", "favs", "update", "remove", "clean",
+})
+
+def resolve_unknown_command(bins: list) -> Optional[str]:
+    """Return the unknown token, or None if the invocation looks valid."""
+    if not bins:
+        return None
+    first = bins[0].lower()
+    if _is_bin(first):
+        return None
+    if first.startswith("-"):
+        return None
+    if first in TOP_LEVEL_COMMANDS:
+        if first == "update" and len(bins) > 1 and bins[1].lower() not in ("check", "install", "status"):
+            return bins[1]
+        return None
+    if first in ("favorites", "favs") and len(bins) > 1 and bins[1] in ("remove", "clear"):
+        return None
+    return bins[0]
+
+def print_command_error(unknown: str):
+    print(f"\n{red('✗')} Unknown command: {bold(unknown)}")
+    print(dim("Run `binx help` for usage.\n"))
+    print_help()
+
 # ── Help ──────────────────────────────────────────────────────────────────────
 def print_help():
     print(f"\n{bold(cyan('╔══════════════════════════════════════════════════════════════════════╗'))}")
-    print(f"{bold(cyan('║'))}  {bold(green('🔍 binx-cli'))} — Modern Crowdsourced BIN Lookup & Reviews         {bold(cyan('║'))}")
+    print(f"{bold(cyan('║'))}  {bold(green('🔍 binx-cli'))} v{__version__} — BIN Lookup & Reviews ({DOMAIN})      {bold(cyan('║'))}")
     print(f"{bold(cyan('╚══════════════════════════════════════════════════════════════════════╝'))}")
+
+    print(f"\n{bold(yellow('INSTALL:'))}")
+    print(f"  {dim('npm')}    {cyan('npm install -g binx-cli')}")
+    print(f"  {dim('curl')}   {cyan('curl -fsSL https://raw.githubusercontent.com/dustindog101/binx-cli/main/install.sh | bash')}")
+    print(f"  {dim('git')}    {cyan('git clone https://github.com/dustindog101/binx-cli.git && cd binx-cli')}")
     
     print(f"\n{bold(yellow('USAGE:'))}")
-    print(f"  python3 binx.py {cyan('<bin1> [bin2] ...')} [options]")
-    print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
-    print(f"  python3 binx.py {cyan('help')}")
-    print(f"  python3 binx.py {cyan('list')}")
-    print(f"  python3 binx.py {cyan('favorite')} <bin1> [\"note\"] [bin2] ...")
-    print(f"  python3 binx.py {cyan('favorites')}")
-    print(f"  python3 binx.py {cyan('favorites remove')} <bin1> [bin2] ...")
-    print(f"  python3 binx.py {cyan('favorites clear')}")
-    print(f"  python3 binx.py {cyan('--version')}")
-    print(f"  python3 binx.py {cyan('update')}")
-    print(f"  python3 binx.py {cyan('update install')}")
-    print(f"  python3 binx.py {cyan('--check-update')}")
-    print(f"  python3 binx.py {cyan('remove')} <bin1> [bin2] ...")
-    print(f"  python3 binx.py {cyan('clean')} <text_or_file>")
+    print(f"  {cyan('binx')} {cyan('<bin1> [bin2] ...')} [options]")
+    print(f"  {cyan('binx --file')} <file.txt> [options]")
+    print(f"  {cyan('binx help')}")
+    print(f"  {cyan('binx list')}")
+    print(f"  {cyan('binx update')} [check|install]")
+    print(f"  {cyan('binx favorite')} <bin> [\"note\"]")
+    print(f"  {cyan('binx favorites')}")
+    print(f"  {cyan('binx favorites remove')} <bin> ...")
+    print(f"  {cyan('binx favorites clear')}")
+    print(f"  {cyan('binx remove')} <bin> ...")
+    print(f"  {cyan('binx clean')} <text_or_file>")
+    print(f"  {cyan('binx --version')}")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
-    print(f"  {green('help')}                        Show this beautiful, customized help screen.")
-    print(f"  {green('list')}                        Display all the BINs saved in the local cache.")
+    print(f"  {green('help')}                        Show this help screen.")
+    print(f"  {green('<bin>')}                       Look up one or more BIN numbers.")
+    print(f"  {green('list')}                        Display all BINs saved in the local cache.")
     print(f"  {green('update')} [check|install]       Check for or install updates from GitHub.")
-    print(f"  {green('favorite')} <bin> [\"note\"]     Toggle favorite, or favorite with an optional note.")
-    print(f"  {green('favorites')}                   Display all favorited BINs saved in the local cache.")
-    print(f"  {green('favorites remove')} <bin1> ...   Remove one or more BINs from the favorites list.")
-    print(f"  {green('favorites clear')}            Clear all favorites from the local database.")
-    print(f"  {green('remove')} <bin1> ...             Remove one or more BINs entirely from the local cache.")
-    print(f"  {green('clean')} <text_or_file>        Extract and clean BINs from raw text or a file path.")
+    print(f"  {green('favorite')} <bin> [\"note\"]     Toggle favorite, or favorite with a note.")
+    print(f"  {green('favorites')}                   List all favorited BINs (with notes).")
+    print(f"  {green('favorites remove')} <bin> ...   Remove BINs from favorites.")
+    print(f"  {green('favorites clear')}            Clear all favorites.")
+    print(f"  {green('remove')} <bin> ...             Delete BINs from the local cache.")
+    print(f"  {green('clean')} <text_or_file>        Extract BINs from raw text or a file.")
 
     print(f"\n{bold(yellow('OPTIONS:'))}")
-    print(f"  {green('-f, --file')} {cyan('FILE')}             A text file with one BIN per line to process in bulk.")
-    print(f"  {green('-j, --json')} {cyan('FILE')}             Export results as a structured JSON file.")
-    print(f"  {green('-c, --concurrency')} {cyan('NUM')}       Number of concurrent lookup threads.")
-    print(f"                           Auto-calculates based on BIN count by default.")
-    print(f"                           Set to 1 for sequential processing.")
-    print(f"  {green('--proxy')} {cyan('URL')}                  Proxy URL to route through (e.g. http://1.2.3.4:8080).")
-    print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
-    print(f"  {green('--offline')} / {green('--cache-only')}       Search and display exclusively from the local cache.")
-    print(f"  {green('--list-cache')} / {green('--list')}      Display all the BINs saved in the local cache.")
-    print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite or set note with --note.")
-    print(f"  {green('--favs')} / {green('--favorites')}        Display all favorited BINs.")
+    print(f"  {green('-f, --file')} {cyan('FILE')}             Read BINs from a file (one per line).")
+    print(f"  {green('-j, --json')} {cyan('FILE')}             Export results to JSON.")
+    print(f"  {green('-c, --concurrency')} {cyan('NUM')}       Concurrent lookups (default: auto).")
+    print(f"  {green('--proxy')} {cyan('URL')}                  Route requests through a proxy.")
+    print(f"  {green('--delay')} {cyan('SECS')}                 Delay between requests (default: 0.3).")
+    print(f"  {green('--offline')}                   Use local cache only.")
+    print(f"  {green('--note')} {cyan('TEXT')}                 Note when favoriting (--favorite).")
     print(f"  {green('--version')}                 Show installed version.")
     print(f"  {green('--check-update')}            Alias for {cyan('binx update')}.")
-    print(f"  {green('BINX_SKIP_UPDATE_CHECK=1')}   Disable background update hints.")
-    print(f"  {green('--remove')} {cyan('BIN')}                 Remove one or more BINs entirely from the local cache.")
-    print(f"  {green('--clean')} {cyan('TEXT_OR_FILE')}         Extract and clean BINs from raw text or a file path.")
-    print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
-    print(f"  {green('--no-color')}                 Disable all ANSI color codes in output.")
-    print(f"  {green('-h, --help')}                 Show this custom help message and exit.")
+    print(f"  {green('--clear-cache')}               Clear the local cache file.")
+    print(f"  {green('--no-color')}                 Disable colored output.")
+    print(f"  {green('-h, --help')}                 Show this help message.")
 
     print(f"\n{bold(yellow('EXAMPLES:'))}")
-    print(f"  {dim('# Lookup a single BIN')}")
-    print(f"  python3 binx.py {cyan('400022')}")
+    print(f"  {dim('# Look up a BIN')}")
+    print(f"  binx {cyan('403306')}")
     print(f"  ")
-    print(f"  {dim('# Lookup multiple BINs concurrently')}")
-    print(f"  python3 binx.py {cyan('400022 486796 432359')} -c 10")
+    print(f"  {dim('# Favorite with a note')}")
+    print(f"  binx {cyan('favorite 539689 \"good for prizepicks\"')}")
     print(f"  ")
-    print(f"  {dim('# Query in fully offline mode from local database')}")
-    print(f"  python3 binx.py {cyan('486796')} --offline")
+    print(f"  {dim('# Check / install updates')}")
+    print(f"  binx {cyan('update')}")
+    print(f"  binx {cyan('update install')}")
     print(f"  ")
-    print(f"  {dim('# List all cached BINs saved locally')}")
-    print(f"  python3 binx.py {cyan('list')}")
-    print(f"  ")
-    print(f"  {dim('# Toggle favorite status for BINs')}")
-    print(f"  python3 binx.py {cyan('favorite 539689 \"good for prizepicks\"')}")
-    print(f"  ")
-    print(f"  {dim('# View all favorited BINs')}")
-    print(f"  python3 binx.py {cyan('favorites')}")
-    print(f"  ")
-    print(f"  {dim('# Remove specific BINs from favorites')}")
-    print(f"  python3 binx.py {cyan('favorites remove 486796')}")
-    print(f"  ")
-    print(f"  {dim('# Clear all favorited BINs')}")
-    print(f"  python3 binx.py {cyan('favorites clear')}")
-    print(f"  ")
-    print(f"  {dim('# Delete specific BINs entirely from local cache')}")
-    print(f"  python3 binx.py {cyan('remove 486796 400895')}")
-    print(f"  ")
-    print(f"  {dim('# Clean and extract BINs from raw text')}")
-    print(f"  python3 binx.py {cyan('clean \"cards: 4867961234567890, 4008951234567890\"')}")
-    print(f"  ")
-    print(f"  {dim('# Clean and extract BINs from a text file')}")
-    print(f"  python3 binx.py {cyan('clean dump.txt')}")
-    print(f"\n{dim('Powered by DoH (DNS-over-HTTPS) to guarantee secure, un-interceptable lookups.')}\n")
+    print(f"  {dim('# Batch lookup from file')}")
+    print(f"  binx {cyan('--file bins.txt -j results.json')}")
+    print(f"\n{dim(f'API: {API}  ·  Docs: github.com/{GITHUB_REPO}')}\n")
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 def parse_args():
@@ -607,8 +612,20 @@ def main():
         sys.exit(handle_update_command("check", force=True))
 
     bins = list(args.bins)
-    if bins and bins[0] == "update":
+    if bins and bins[0].lower() == "update":
         sys.exit(handle_update_command(bins[1] if len(bins) > 1 else None))
+
+    unknown = resolve_unknown_command(bins)
+    if unknown:
+        print_command_error(unknown)
+        sys.exit(1)
+
+    if not bins and not args.file and not any([
+        args.clear_cache, args.list_cache, args.fav is not None,
+        args.favs, args.remove is not None, args.clean is not None,
+    ]):
+        print_help()
+        sys.exit(0)
 
     # ── 1. Clear Cache check ──────────────────────────────────────────────────
     if args.clear_cache:
@@ -860,6 +877,13 @@ def main():
 
     seen = set()
     bins = [b for b in bins if not (b in seen or seen.add(b))]
+
+    # Filter to valid BINs only; if nothing left, show help
+    valid_bins = [b for b in bins if _is_bin(b)]
+    if bins and not valid_bins:
+        print_command_error(bins[0])
+        sys.exit(1)
+    bins = valid_bins
 
     if not bins:
         print_help()
