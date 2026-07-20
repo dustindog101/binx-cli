@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * binx - CLI to look up BIN info & reviews from binx.vip
+ * binx - CLI to look up BIN info & reviews from binx.cz
  *
  * Usage:
  *   node binx.js 400895
@@ -51,7 +51,7 @@ function parseArgs(args) {
 
 async function scrapeBIN(page, bin) {
     try {
-        await page.goto(`https://binx.vip/bin/${bin}`, {
+        await page.goto(`https://binx.cz/bin/${bin}`, {
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
@@ -210,7 +210,7 @@ async function main() {
         process.exit(0);
     }
 
-    console.log(`\n🔍 Looking up ${bins.length} BIN(s) on binx.vip...\n`);
+    console.log(`\n🔍 Looking up ${bins.length} BIN(s) on binx.cz...\n`);
 
     // 1. Launch Chrome with remote debugging
     process.stdout.write('  Starting Chrome... ');

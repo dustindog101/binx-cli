@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-binx-cli — BIN lookup & reviews from binx.vip
+binx-cli — BIN lookup & reviews from binx.cz
 
 Requirements:  pip install curl_cffi
 Usage:
@@ -10,8 +10,15 @@ Usage:
   python3 binx.py 403306 --json out.json
 """
 
-import sys, json, time, argparse, os, tempfile
+import sys, json, time, argparse, os, tempfile, re, shutil, subprocess, tarfile
 from pathlib import Path
+from typing import Optional, List, Tuple
+
+__version__ = "1.2.0"
+DOMAIN = "binx.cz"
+GITHUB_REPO = "dustindog101/binx-cli"
+UPDATE_CHECK_TTL = 86_400  # 24h
+UPDATE_TIMEOUT = 8
 
 try:
     from curl_cffi import requests as cffi_requests
@@ -34,12 +41,11 @@ SESSION = cffi_requests.Session(
     impersonate="chrome124",
     curl_options={CurlOpt.DOH_URL: "https://cloudflare-dns.com/dns-query"}
 )
-API = "https://api.binx.vip/api"
-HEADERS = {
-    "Accept": "application/json",
-    "Origin": "https://binx.vip",
-    "Referer": "https://binx.vip/",
-}
+SITE = f"https://{DOMAIN}"
+API = f"https://api.{DOMAIN}/api"
+HEADERS = {"Accept": "application/json", "Origin": SITE, "Referer": f"{SITE}/"}
+UPDATE_CACHE_FILE = Path.home() / ".cache" / "binx" / "update_check.json"
+_update_hint_shown = False
 
 # ── Cache Database Setup ──────────────────────────────────────────────────────
 CACHE_FILE = Path(__file__).resolve().parent / "binx_cache.json"
@@ -63,6 +69,297 @@ def save_cache(cache: dict):
     except Exception as e:
         print(red(f"✗ Failed to save cache: {e}"))
 
+# ── Updates ───────────────────────────────────────────────────────────────────
+def install_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+def is_connectivity_error(msg: str) -> bool:
+    m = (msg or "").lower()
+    needles = (
+        "resolve", "connection", "timeout", "ssl", "certificate", "refused",
+        "unreachable", "name or service not known", "could not connect",
+        "failed to perform", "http 404", "http 502", "http 503",
+        "binx.vip", "nodename nor servname",
+    )
+    return any(n in m for n in needles)
+
+def _version_tuple(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:3] or [0])
+
+def _compare_versions(current: str, latest: str) -> str:
+    cur, lat = _version_tuple(current), _version_tuple(latest)
+    if lat > cur:
+        return "update_available"
+    if lat == cur:
+        return "up_to_date"
+    return "ahead"
+
+def fetch_latest_release(session=None) -> Tuple[Optional[dict], Optional[str]]:
+    session = session or SESSION
+    try:
+        r = session.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest",
+            headers={"Accept": "application/vnd.github+json"},
+            timeout=UPDATE_TIMEOUT,
+        )
+        if r.status_code == 404:
+            return None, "No releases published yet"
+        if r.status_code != 200:
+            return None, f"GitHub API HTTP {r.status_code}"
+        data = r.json()
+        tag = data.get("tag_name") or ""
+        version = tag.lstrip("vV")
+        if not version:
+            return None, "Release has no version tag"
+        return {
+            "version": version,
+            "tag": tag,
+            "url": data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases/latest",
+            "name": data.get("name") or tag,
+            "tarball": f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{tag}.tar.gz",
+        }, None
+    except Exception as e:
+        return None, str(e).split("\n")[0]
+
+def _read_update_cache() -> dict:
+    if not UPDATE_CACHE_FILE.exists():
+        return {}
+    try:
+        return json.loads(UPDATE_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _write_update_cache(data: dict):
+    try:
+        UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        UPDATE_CACHE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+def check_for_updates(force: bool = False) -> dict:
+    """Check GitHub for updates. Never raises; returns cached data when offline."""
+    if os.environ.get("BINX_SKIP_UPDATE_CHECK"):
+        cached = _read_update_cache()
+        if cached:
+            return cached
+        return {"current": __version__, "status": "skipped", "latest": None, "url": f"https://github.com/{GITHUB_REPO}/releases"}
+
+    cached = _read_update_cache()
+    now = time.time()
+    if not force and cached.get("checked_at", 0) + UPDATE_CHECK_TTL > now:
+        return cached
+
+    release, err = fetch_latest_release()
+    if release:
+        result = {
+            "checked_at": now,
+            "current": __version__,
+            "latest": release["version"],
+            "tag": release["tag"],
+            "url": release["url"],
+            "tarball": release["tarball"],
+            "status": _compare_versions(__version__, release["version"]),
+            "error": None,
+        }
+        _write_update_cache(result)
+        return result
+
+    # Network failed — keep last known good cache, never wipe it
+    if cached.get("latest"):
+        cached["checked_at"] = now
+        cached["status"] = cached.get("status", "unavailable")
+        cached["error"] = err
+        return cached
+
+    return {
+        "checked_at": now,
+        "current": __version__,
+        "latest": None,
+        "status": "unavailable",
+        "error": err,
+        "url": f"https://github.com/{GITHUB_REPO}/releases",
+    }
+
+def print_update_status(info: dict):
+    status, cur, lat = info.get("status"), info.get("current", __version__), info.get("latest")
+    if status == "skipped":
+        print(dim("Update check disabled (BINX_SKIP_UPDATE_CHECK=1)."))
+        return
+    if not lat:
+        print(dim(f"Could not reach GitHub ({info.get('error', 'offline')})."))
+        print(dim(f"binx-cli v{cur} is still usable. Try again later or visit {info.get('url')}."))
+        return
+    if status == "update_available":
+        print(yellow(f"⬆  Update available: v{cur} → v{lat}"))
+        print(f"   Run {cyan('binx update install')} or visit {cyan(info['url'])}")
+    elif status == "up_to_date":
+        print(green(f"✓  binx-cli v{cur} is up to date."))
+    else:
+        print(dim(f"Running v{cur} (latest release: v{lat})"))
+
+def notify_if_update_available():
+    """Quiet one-line hint before lookups. Never blocks or errors."""
+    if os.environ.get("BINX_SKIP_UPDATE_CHECK") or not sys.stdout.isatty():
+        return
+    try:
+        info = check_for_updates()
+        if info.get("status") == "update_available":
+            print(dim(f"Update available: v{info['latest']} — run `binx update install`\n"))
+    except Exception:
+        pass
+
+def maybe_suggest_update(err_msg: str = ""):
+    """On API errors, hint about updates using cache only (no extra network call)."""
+    global _update_hint_shown
+    if _update_hint_shown or not is_connectivity_error(err_msg):
+        return
+    _update_hint_shown = True
+    info = _read_update_cache()
+    print(yellow("\n⚠  Connection/API error — a newer release may fix this."))
+    if info.get("latest") and _version_tuple(info["latest"]) > _version_tuple(__version__):
+        print(f"   Latest: v{info['latest']}  →  {cyan(info['url'])}")
+        print(f"   Run {cyan('binx update install')}")
+    else:
+        print(f"   Run {cyan('binx update')} when online.")
+    print(dim(f"   Current: v{__version__}  ·  API: {API}\n"))
+
+def _validate_script(path: Path) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+        return "__version__" in text and "def fetch_bin" in text
+    except Exception:
+        return False
+
+def _update_via_git(root: Path) -> Tuple[bool, str]:
+    try:
+        subprocess.run(["git", "fetch", "--tags", "origin"], cwd=root, check=True, capture_output=True, text=True, timeout=60)
+        subprocess.run(["git", "pull", "--ff-only"], cwd=root, check=True, capture_output=True, text=True, timeout=60)
+        return True, "Updated via git pull."
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or e.stdout or str(e)).strip().split("\n")[-1]
+        return False, f"Git update failed: {err}"
+    except Exception as e:
+        return False, f"Git update failed: {e}"
+
+def _update_via_release(info: dict, root: Path) -> Tuple[bool, str]:
+    tag, tarball = info.get("tag"), info.get("tarball")
+    if not tag or not tarball:
+        return False, "No release info available. Run `binx update` when online."
+    script = root / "binx.py"
+    backup = root / f"binx.py.bak.{int(time.time())}"
+    tmp = Path(tempfile.mkdtemp(prefix="binx-update-"))
+    try:
+        r = SESSION.get(tarball, timeout=60)
+        if r.status_code != 200:
+            return False, f"Download failed: HTTP {r.status_code}"
+        archive = tmp / "release.tar.gz"
+        archive.write_bytes(r.content)
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(tmp, filter="data")
+        extracted = next(tmp.glob(f"*/binx.py"), None)
+        if not extracted or not _validate_script(extracted):
+            return False, "Downloaded release failed validation."
+        if script.exists():
+            shutil.copy2(script, backup)
+        shutil.copy2(extracted, script)
+        os.chmod(script, 0o755)
+        req = next(tmp.glob("*/requirements.txt"), None)
+        if req:
+            shutil.copy2(req, root / "requirements.txt")
+        ver = re.search(r'__version__\s*=\s*["\']([^"\']+)', extracted.read_text(encoding="utf-8"))
+        new_ver = ver.group(1) if ver else tag
+        return True, f"Updated to v{new_ver} from GitHub release {tag}."
+    except Exception as e:
+        if backup.exists() and script.exists():
+            shutil.copy2(backup, script)
+        return False, f"Release update failed: {e}".split("\n")[0]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+def perform_update(force: bool = False) -> int:
+    root = install_dir()
+    if (root / ".git").is_dir():
+        ok, msg = _update_via_git(root)
+        if ok:
+            print(green(f"✓  {msg}"))
+            return 0
+        print(yellow(f"⚠  {msg}"))
+        return 1
+
+    info = check_for_updates(force=True)
+    if info.get("status") == "up_to_date" and not force:
+        print(green(f"✓  binx-cli v{__version__} is already up to date."))
+        return 0
+    if not info.get("latest"):
+        print(dim(f"Could not reach GitHub ({info.get('error', 'offline')}). Try again later."))
+        return 0
+
+    ok, msg = _update_via_release(info, root)
+    if ok:
+        print(green(f"✓  {msg}"))
+        # refresh deps if venv exists
+        venv_pip = root / "venv" / "bin" / "pip"
+        if venv_pip.exists() and (root / "requirements.txt").exists():
+            try:
+                subprocess.run([str(venv_pip), "install", "-q", "-r", str(root / "requirements.txt")], check=False, timeout=120)
+                print(dim("   Dependencies refreshed."))
+            except Exception:
+                pass
+        return 0
+    print(yellow(f"⚠  {msg}"))
+    return 1
+
+def handle_update_command(subcmd: Optional[str] = None, force: bool = False) -> int:
+    sub = (subcmd or "check").lower()
+    if sub in ("check", "status"):
+        print_update_status(check_for_updates(force=force))
+        return 0
+    if sub == "install":
+        return perform_update(force=force)
+    print(red(f"Unknown update command: {sub}"))
+    print(dim("Usage: binx update [check|install]"))
+    return 1
+
+def _is_bin(tok: str) -> bool:
+    return tok.isdigit() and 4 <= len(tok) <= 8
+
+def parse_favorite_tokens(tokens: list) -> List[Tuple[str, Optional[str]]]:
+    """Return [(bin, note|None)]. note=None → toggle; note=str → favorite + set note."""
+    out, i = [], 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("--note", "-n"):
+            if out and i + 1 < len(tokens):
+                out[-1] = (out[-1][0], tokens[i + 1])
+                i += 2
+                continue
+            i += 1
+            continue
+        if not _is_bin(tok):
+            i += 1
+            continue
+        if i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if len(nxt) >= 2 and nxt[0] == nxt[-1] and nxt[0] in "\"'":
+                out.append((tok, nxt[1:-1]))
+                i += 2
+                continue
+            if not _is_bin(nxt):
+                parts, j = [], i + 1
+                while j < len(tokens) and not _is_bin(tokens[j]):
+                    if tokens[j] in ("--note", "-n") and j + 1 < len(tokens):
+                        j += 1
+                        parts.append(tokens[j])
+                    else:
+                        parts.append(tokens[j])
+                    j += 1
+                note = " ".join(parts).strip() or None
+                out.append((tok, note))
+                i = j
+                continue
+        out.append((tok, None))
+        i += 1
+    return out
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
 def fetch_bin(bin_number: str, session=None, proxy: str = None) -> dict:
@@ -75,10 +372,14 @@ def fetch_bin(bin_number: str, session=None, proxy: str = None) -> dict:
     try:
         r = session.get(f"{API}/bins/{bin_number}", **kwargs)
         if r.status_code != 200:
-            return {"bin": bin_number, "error": f"HTTP {r.status_code}", "info": {}, "reviews": []}
+            err = f"HTTP {r.status_code}"
+            maybe_suggest_update(err)
+            return {"bin": bin_number, "error": err, "info": {}, "reviews": []}
         info_data = r.json().get("data", {})
     except Exception as e:
-        return {"bin": bin_number, "error": str(e).split("\n")[0], "info": {}, "reviews": []}
+        err = str(e).split("\n")[0]
+        maybe_suggest_update(err)
+        return {"bin": bin_number, "error": err, "info": {}, "reviews": []}
 
     # Reviews
     reviews = []
@@ -139,7 +440,10 @@ def print_bin(result: dict):
         stamp = f"  {yellow('[OFFLINE FALLBACK]')}"
         
     fav_star = f" {yellow('★')}" if result.get("favorite") else ""
+    fav_note = result.get("favorite_note")
     print(f"  {bold('BIN')} {bold(result['bin'])}{fav_star}  ·  {dim(bank)}{stamp}")
+    if fav_note:
+        print(f"  {dim('Note:')} {fav_note}")
     print(cyan("═" * 62))
 
     if result.get("error"):
@@ -184,17 +488,22 @@ def print_help():
     print(f"  python3 binx.py {cyan('--file')} <file.txt> [options]")
     print(f"  python3 binx.py {cyan('help')}")
     print(f"  python3 binx.py {cyan('list')}")
-    print(f"  python3 binx.py {cyan('favorite')} <bin1> [bin2] ...")
+    print(f"  python3 binx.py {cyan('favorite')} <bin1> [\"note\"] [bin2] ...")
     print(f"  python3 binx.py {cyan('favorites')}")
     print(f"  python3 binx.py {cyan('favorites remove')} <bin1> [bin2] ...")
     print(f"  python3 binx.py {cyan('favorites clear')}")
+    print(f"  python3 binx.py {cyan('--version')}")
+    print(f"  python3 binx.py {cyan('update')}")
+    print(f"  python3 binx.py {cyan('update install')}")
+    print(f"  python3 binx.py {cyan('--check-update')}")
     print(f"  python3 binx.py {cyan('remove')} <bin1> [bin2] ...")
     print(f"  python3 binx.py {cyan('clean')} <text_or_file>")
 
     print(f"\n{bold(yellow('COMMANDS:'))}")
     print(f"  {green('help')}                        Show this beautiful, customized help screen.")
     print(f"  {green('list')}                        Display all the BINs saved in the local cache.")
-    print(f"  {green('favorite')} <bin1> ...          Toggle favorite status for one or more BINs.")
+    print(f"  {green('update')} [check|install]       Check for or install updates from GitHub.")
+    print(f"  {green('favorite')} <bin> [\"note\"]     Toggle favorite, or favorite with an optional note.")
     print(f"  {green('favorites')}                   Display all favorited BINs saved in the local cache.")
     print(f"  {green('favorites remove')} <bin1> ...   Remove one or more BINs from the favorites list.")
     print(f"  {green('favorites clear')}            Clear all favorites from the local database.")
@@ -211,8 +520,11 @@ def print_help():
     print(f"  {green('--delay')} {cyan('SECS')}                 Delay between sequential requests in seconds (default: {bold('0.3')}).")
     print(f"  {green('--offline')} / {green('--cache-only')}       Search and display exclusively from the local cache.")
     print(f"  {green('--list-cache')} / {green('--list')}      Display all the BINs saved in the local cache.")
-    print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite status for one or more BINs.")
+    print(f"  {green('--fav')} / {green('--favorite')} {cyan('BIN')}        Toggle favorite or set note with --note.")
     print(f"  {green('--favs')} / {green('--favorites')}        Display all favorited BINs.")
+    print(f"  {green('--version')}                 Show installed version.")
+    print(f"  {green('--check-update')}            Alias for {cyan('binx update')}.")
+    print(f"  {green('BINX_SKIP_UPDATE_CHECK=1')}   Disable background update hints.")
     print(f"  {green('--remove')} {cyan('BIN')}                 Remove one or more BINs entirely from the local cache.")
     print(f"  {green('--clean')} {cyan('TEXT_OR_FILE')}         Extract and clean BINs from raw text or a file path.")
     print(f"  {green('--clear-cache')}               Safely clear the local cache file.")
@@ -233,7 +545,7 @@ def print_help():
     print(f"  python3 binx.py {cyan('list')}")
     print(f"  ")
     print(f"  {dim('# Toggle favorite status for BINs')}")
-    print(f"  python3 binx.py {cyan('favorite 486796 400895')}")
+    print(f"  python3 binx.py {cyan('favorite 539689 \"good for prizepicks\"')}")
     print(f"  ")
     print(f"  {dim('# View all favorited BINs')}")
     print(f"  python3 binx.py {cyan('favorites')}")
@@ -256,7 +568,7 @@ def print_help():
 
 # ── Args ──────────────────────────────────────────────────────────────────────
 def parse_args():
-    p = argparse.ArgumentParser(prog="binx", description="BIN lookup & reviews from binx.vip", add_help=False)
+    p = argparse.ArgumentParser(prog="binx", description=f"BIN lookup & reviews from {DOMAIN}", add_help=False)
     p.add_argument("bins", nargs="*", help="BIN number(s)")
     p.add_argument("--file", "-f", metavar="FILE", help="File with one BIN per line")
     p.add_argument("--json", "-j", metavar="FILE", help="Save results to JSON file")
@@ -265,8 +577,11 @@ def parse_args():
     p.add_argument("--concurrency", "-c", type=int, default=None, metavar="NUM", help="Number of concurrent lookups (default: auto, set to 1 for sequential)")
     p.add_argument("--offline", "--cache-only", action="store_true", help="Search and display exclusively from the local cache")
     p.add_argument("--list-cache", "--list", action="store_true", help="Display all the BINs saved in the local cache")
-    p.add_argument("--fav", "--favorite", metavar="BIN", nargs="*", default=None, help="Toggle favorite status for one or more BINs")
+    p.add_argument("--fav", "--favorite", metavar="BIN", nargs="*", default=None, help="Toggle favorite or set note (--note)")
     p.add_argument("--favs", "--favorites", action="store_true", help="Display all favorited BINs")
+    p.add_argument("--note", "-n", metavar="TEXT", help="Note/reason when favoriting a BIN")
+    p.add_argument("--version", action="store_true", help="Show installed version")
+    p.add_argument("--check-update", action="store_true", help="Check GitHub for a newer release")
     p.add_argument("--remove", metavar="BIN", nargs="*", default=None, help="Remove one or more BINs entirely from the local cache")
     p.add_argument("--clean", metavar="TEXT_OR_FILE", nargs="*", default=None, help="Extract and clean BINs from raw text or a file path")
     p.add_argument("--clear-cache", action="store_true", help="Safely clear the local cache file")
@@ -284,6 +599,17 @@ def main():
         print_help()
         sys.exit(0)
 
+    if args.version:
+        print(f"binx-cli v{__version__}  ({DOMAIN})")
+        sys.exit(0)
+
+    if args.check_update:
+        sys.exit(handle_update_command("check", force=True))
+
+    bins = list(args.bins)
+    if bins and bins[0] == "update":
+        sys.exit(handle_update_command(bins[1] if len(bins) > 1 else None))
+
     # ── 1. Clear Cache check ──────────────────────────────────────────────────
     if args.clear_cache:
         if CACHE_FILE.exists():
@@ -300,7 +626,6 @@ def main():
     cache = load_cache()
     cache_modified = False
 
-    bins = list(args.bins)
     if "help" in bins:
         print_help()
         sys.exit(0)
@@ -395,9 +720,10 @@ def main():
         h_country = "Country"
         h_bank    = "Bank"
         h_reviews = "Reviews"
+        h_note    = "Note"
         
-        print(f"  {bold(h_bin.ljust(10))}  {bold(h_brand.ljust(10))}  {bold(h_type.ljust(8))}  {bold(h_country.ljust(15))}  {bold(h_bank.ljust(35))}  {bold(h_reviews)}")
-        print(dim("  " + "─" * 95))
+        print(f"  {bold(h_bin.ljust(10))}  {bold(h_brand.ljust(10))}  {bold(h_type.ljust(8))}  {bold(h_country.ljust(15))}  {bold(h_bank.ljust(30))}  {bold(h_reviews.rjust(7))}  {bold(h_note)}")
+        print(dim("  " + "─" * 115))
         
         total_reviews = 0
         for b in sorted_bins:
@@ -410,29 +736,33 @@ def main():
             brand   = (info.get("brand") or "UNKNOWN")[:10]
             type_   = (info.get("type") or "UNKNOWN")[:8]
             country = (info.get("country_name") or "UNKNOWN")[:15]
-            bank    = (info.get("bank") or "UNKNOWN")[:35]
+            bank    = (info.get("bank") or "UNKNOWN")[:30]
+            note    = (entry.get("favorite_note") or "")[:40]
             
             bin_display = f"{b} ★"
-            print(f"  {cyan(bin_display.ljust(10))}  {brand.ljust(10)}  {type_.ljust(8)}  {country.ljust(15)}  {dim(bank.ljust(35))}  {green(str(rev_len).rjust(7))}")
+            print(f"  {cyan(bin_display.ljust(10))}  {brand.ljust(10)}  {type_.ljust(8)}  {country.ljust(15)}  {dim(bank.ljust(30))}  {green(str(rev_len).rjust(7))}  {note}")
             
-        print(dim("  " + "─" * 95))
+        print(dim("  " + "─" * 115))
         print(f"  {bold('Total Favorites Stats:')} {green(str(total_reviews))} reviews across {bold(str(len(sorted_bins)))} favorited BIN(s)\n")
         sys.exit(0)
 
     if args.fav is not None or (bins and bins[0] in ("fav", "favorite")):
-        fav_targets = args.fav if args.fav is not None else bins[1:]
-        if not fav_targets:
+        raw_targets = list(args.fav if args.fav is not None else bins[1:])
+        if args.note and raw_targets:
+            raw_targets.extend(["--note", args.note])
+        fav_pairs = parse_favorite_tokens(raw_targets)
+        if not fav_pairs:
             print(red("Error: Please specify one or more BINs to favorite."))
             sys.exit(1)
             
-        for b in fav_targets:
+        for b, note in fav_pairs:
             if not b.isdigit() or not (4 <= len(b) <= 8):
                 print(yellow(f"⚠  Skipping invalid BIN: {b}"))
                 continue
                 
             entry = cache.get(b, {})
             current_fav = entry.get("favorite", False)
-            new_fav = not current_fav
+            new_fav = True if note is not None else not current_fav
             
             if b not in cache:
                 print(dim(f"  BIN {b} not in cache. Fetching details online to save..."))
@@ -445,23 +775,24 @@ def main():
                             "reviews": res.get("reviews", [])
                         }
                     else:
-                        entry = {
-                            "info": {},
-                            "reviews": []
-                        }
+                        entry = {"info": {}, "reviews": []}
                 except Exception:
-                    entry = {
-                        "info": {},
-                        "reviews": []
-                    }
+                    entry = {"info": {}, "reviews": []}
             
             entry["favorite"] = new_fav
+            if note is not None and new_fav:
+                entry["favorite_note"] = note
+            elif not new_fav:
+                entry.pop("favorite_note", None)
             cache[b] = entry
             cache_modified = True
             
             status_str = green("Added to") if new_fav else red("Removed from")
             star_char = yellow("★") if new_fav else "☆"
-            print(f"  {star_char} {bold(b)} has been {status_str} favorites.")
+            line = f"  {star_char} {bold(b)} has been {status_str} favorites."
+            if new_fav and entry.get("favorite_note"):
+                line += f"  {dim('Note:')} {entry['favorite_note']}"
+            print(line)
             
         if cache_modified:
             save_cache(cache)
@@ -561,6 +892,7 @@ def main():
                 print(f"  Fetching {bold(b)}... " + red("✗  Not cached"))
 
     else:
+        notify_if_update_available()
         # Determine optimal concurrency if not set
         concurrency = args.concurrency
         if concurrency is None:
@@ -618,6 +950,7 @@ def main():
                             else:
                                 results[idx] = result
                                 print(f"  Fetching {bold(b)}... " + red(f"✗  {err_msg}"))
+                                maybe_suggest_update(err_msg)
                         else:
                             results[idx] = result
                             n = len(result["reviews"])
@@ -656,6 +989,7 @@ def main():
                         print(yellow(f"⚠  Failed ({err_msg}), loaded from cache"))
                     else:
                         print(red(f"✗  {err_msg}"))
+                        maybe_suggest_update(err_msg)
                         results[i] = result
                 else:
                     n = len(result["reviews"])
@@ -700,8 +1034,12 @@ def main():
                 updated_entry = {
                     "info": r.get("info", {}),
                     "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "reviews": merged_reviews
+                    "reviews": merged_reviews,
                 }
+                if cached_entry.get("favorite"):
+                    updated_entry["favorite"] = True
+                if cached_entry.get("favorite_note"):
+                    updated_entry["favorite_note"] = cached_entry["favorite_note"]
                 
                 # Compare to detect changes
                 if (b not in cache or 
@@ -717,6 +1055,7 @@ def main():
     for r in results:
         if r is not None:
             r["favorite"] = cache.get(r["bin"], {}).get("favorite", False)
+            r["favorite_note"] = cache.get(r["bin"], {}).get("favorite_note")
             print_bin(r)
 
     # ── 6. JSON Export Check ──────────────────────────────────────────────────
